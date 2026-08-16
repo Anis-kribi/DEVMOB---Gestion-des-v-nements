@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ------------------------------------------
+    // CORE FUNCTIONS
+    // ------------------------------------------
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function userExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && userExists() && getUserData().role == 'admin';
+    }
+
+    function isOrganisateur() {
+      return isAuthenticated() && userExists() && getUserData().role == 'organisateur';
+    }
+
+    function isUtilisateur() {
+      return isAuthenticated() && userExists() && getUserData().role == 'utilisateur';
+    }
+
+    // ------------------------------------------
+    // USERS COLLECTION
+    // ------------------------------------------
+    match /users/{userId} {
+      // Anyone authenticated can read users (useful to get names/avatars)
+      allow read: if isAuthenticated();
+      // Only the user themselves or an admin can update/write their profile
+      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+    }
+
+    // ------------------------------------------
+    // EVENTS COLLECTION
+    // ------------------------------------------
+    match /events/{eventId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() || isOrganisateur();
+      
+      // Update allows:
+      // 1. Admin (full access)
+      // 2. Organizer of the event (full access)
+      // 3. ANY authenticated user IF they are ONLY updating 'currentAttendees'
+      allow update: if isAdmin() 
+                    || (isOrganisateur() && resource.data.organizerId == request.auth.uid)
+                    || (
+                      isAuthenticated() && 
+                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentAttendees'])
+                    );
+
+      allow delete: if isAdmin() || (isOrganisateur() && resource.data.organizerId == request.auth.uid);
+    }
+
+    // ------------------------------------------
+    // RESERVATIONS COLLECTION
+    // ------------------------------------------
+    match /reservations/{reservationId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() || 
+        resource.data.userId == request.auth.uid ||
+        (isOrganisateur() && get(/databases/$(database)/documents/events/$(resource.data.eventId)).data.organizerId == request.auth.uid)
+      );
+      
+      // Allow any authenticated user to create a reservation for themselves
+      allow create: if isAuthenticated() 
+                    && request.resource.data.userId == request.auth.uid;
+      
+      allow update, delete: if isAuthenticated() && (
+        isAdmin() || 
+        resource.data.userId == request.auth.uid ||
+        (isOrganisateur() && get(/databases/$(database)/documents/events/$(resource.data.eventId)).data.organizerId == request.auth.uid)
+      );
+    }
+
+    // ------------------------------------------
+    // REVIEWS COLLECTION
+    // ------------------------------------------
+    match /reviews/{reviewId} {
+      allow read: if isAuthenticated();
+      
+      // Allow any authenticated user to create a review, and edit/delete their own
+      allow create: if isAuthenticated() 
+                    && request.resource.data.userId == request.auth.uid;
+                    
+      allow update, delete: if isAuthenticated() && (
+        isAdmin() || 
+        resource.data.userId == request.auth.uid
+      );
+    }
+  }
+}
